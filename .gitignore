@@ -1,0 +1,5 @@
+# State is deliberately outside this repo (~/.claude/flightboard/state) so that
+# a clone never carries another person's dashboard URL or dead pile. If you ever
+# symlink it in for debugging, it still must not be committed.
+state/
+*.local

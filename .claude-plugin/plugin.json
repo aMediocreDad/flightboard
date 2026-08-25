@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "flightboard",
+  "version": "1.0.0",
+  "description": "Sweep every git checkout and open PR into a what-needs-me-now dashboard, published as a private Artifact",
+  "author": { "name": "Filip Ambrosius" },
+  "skills": ["./"],
+  "hooks": "./hooks/hooks.json"
+}
