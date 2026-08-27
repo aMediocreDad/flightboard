@@ -52,6 +52,14 @@ Two things, **both in the same message** — they do not depend on each other:
    the read exists to satisfy the view requirement and to show you what is
    already on the board.
 
+**A `### GITHUB_SEARCH_FAILED` or `### GITHUB_INCONSISTENT` marker in that
+output means stop — do not publish.** An empty `MY_PRS` reads exactly like a
+quiet week, so the collector says so itself rather than letting you infer it:
+the section is empty because the query died, not because the work does not
+exist. One dead search also empties `PR_STATE`, which derives from it. Only
+the searches need redoing, so re-run the GitHub half alone:
+`bash <skill-dir>/collect-github.sh <scratchpad>/flightboard/scan.tsv`.
+
 Item rows carry `ahead` (commits ahead of the **default** branch — the number
 a card quotes, not `unpushed`, which counts against the branch's own upstream)
 and `dirty_files` (up to 3 uncommitted paths, so a card can name what a PR
@@ -221,6 +229,10 @@ cards carry the rest.
   a hand-typed number is a number that can drift.
 - Discovering the view-before-publish requirement at publish time instead
   of reading the artifact during Collect.
+- Publishing a board whose GitHub sections came back empty. "No open PRs and
+  no assigned issues" is a plausible-looking board and a silent failure looks
+  exactly like it; open PRs in `HEAD_LOOKUP` alongside an empty `MY_PRS` is a
+  contradiction, not a quiet week.
 - Treating `review: no-signal` or `checks: none` as a bucket-1 signal —
   they mean the repo has no required reviews and no checks have registered
   yet. Empty is not a decision. A PR opened minutes ago legitimately has
