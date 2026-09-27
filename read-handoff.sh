@@ -18,6 +18,8 @@
 # cap. Head+tail is both smaller and lands on the sentence that matters.
 #
 # Column 1 of the scan is an absolute path, so no repo root is assumed here.
+# Files are read from the checkout's .claude/lead/; the gitdir is where older
+# runs left them.
 
 set -o pipefail
 scan=${1:?usage: bash read-handoff.sh <scan.tsv>}
@@ -29,17 +31,18 @@ awk -F'\t' '$9!="-" {print $1"\t"$9}' "$scan" | while IFS=$'\t' read -r d files;
   echo "########## $(printf '%s' "$d" | sed "s|^$HOME|~|")"
   IFS=',' read -ra fs <<< "$files"
   for f in "${fs[@]}"; do
-    [ -f "$gd/$f" ] || continue
-    size=$(wc -c < "$gd/$f" | tr -d ' ')
+    p="$d/.claude/lead/$f"; [ -f "$p" ] || p="$gd/$f"
+    [ -f "$p" ] || continue
+    size=$(wc -c < "$p" | tr -d ' ')
     if [ "$f" = AGENT_STATUS.md ] || [ "$size" -le "$((HEAD_B + TAIL_B))" ]; then
       # Short enough that an excerpt would print most of it twice.
-      echo "----- $f (${size}B, full) -----"; cat "$gd/$f"
+      echo "----- $f (${size}B, full) -----"; cat "$p"
     else
       echo "----- $f (${size}B, first ${HEAD_B}B + last ${TAIL_B}B) -----"
-      head -c "$HEAD_B" "$gd/$f"
+      head -c "$HEAD_B" "$p"
       printf '\n…[%sB elided from the middle; read the file directly if a card needs it]\n\n' \
              "$((size - HEAD_B - TAIL_B))"
-      tail -c "$TAIL_B" "$gd/$f"
+      tail -c "$TAIL_B" "$p"
       echo
     fi
     echo

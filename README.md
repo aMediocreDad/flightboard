@@ -90,7 +90,7 @@ board. Three files, all created for you:
 Assigned issues are listed separately as a queue of work not yet started.
 
 If you use agent handoff files — `AGENT_STATUS.md`, `BRIEF.md`, `PR_BODY.md` in
-a repo's git directory — they are read too, so delegated work reports its own
+a checkout's `.claude/lead/` — they are read too, so delegated work reports its own
 status without extra bookkeeping. If you don't, nothing changes; that section
 simply stays empty.
 
