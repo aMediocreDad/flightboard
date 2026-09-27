@@ -18,27 +18,32 @@
 # cap. Head+tail is both smaller and lands on the sentence that matters.
 #
 # Column 1 of the scan is an absolute path, so no repo root is assumed here.
-# Files are read from the checkout's .claude/lead/; the gitdir is where older
-# runs left them.
+# Which file a row means (.claude/lead/ or the gitdir, and whether it is too
+# old for the branch) is decided by handoff-path.sh, shared with the scan. The
+# header prints the resolved path so a card can say where the file lives.
 
 set -o pipefail
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$here/handoff-path.sh"
 scan=${1:?usage: bash read-handoff.sh <scan.tsv>}
 HEAD_B=${HEAD_B:-800}
 TAIL_B=${TAIL_B:-400}
 
-awk -F'\t' '$9!="-" {print $1"\t"$9}' "$scan" | while IFS=$'\t' read -r d files; do
+awk -F'\t' '$9!="-" {print $1"\t"$3"\t"$4"\t"$9}' "$scan" \
+| while IFS=$'\t' read -r d br def files; do
   gd=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null) || continue
+  born=$(handoff_born "$d" "$br" "$(handoff_on_default "$br" "$def")")
   echo "########## $(printf '%s' "$d" | sed "s|^$HOME|~|")"
   IFS=',' read -ra fs <<< "$files"
   for f in "${fs[@]}"; do
-    p="$d/.claude/lead/$f"; [ -f "$p" ] || p="$gd/$f"
-    [ -f "$p" ] || continue
+    p=$(handoff_path "$d" "$gd" "$f" "$born") || continue
+    loc=$(printf '%s' "$p" | sed "s|^$HOME|~|")
     size=$(wc -c < "$p" | tr -d ' ')
     if [ "$f" = AGENT_STATUS.md ] || [ "$size" -le "$((HEAD_B + TAIL_B))" ]; then
       # Short enough that an excerpt would print most of it twice.
-      echo "----- $f (${size}B, full) -----"; cat "$p"
+      echo "----- $f (${size}B, full) $loc -----"; cat "$p"
     else
-      echo "----- $f (${size}B, first ${HEAD_B}B + last ${TAIL_B}B) -----"
+      echo "----- $f (${size}B, first ${HEAD_B}B + last ${TAIL_B}B) $loc -----"
       head -c "$HEAD_B" "$p"
       printf '\n…[%sB elided from the middle; read the file directly if a card needs it]\n\n' \
              "$((size - HEAD_B - TAIL_B))"

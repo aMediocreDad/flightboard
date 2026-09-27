@@ -103,7 +103,8 @@ regenerated each run. Only judgment is written by hand.
 |---|---|
 | `scan-local.sh` | classifies every checkout; `--footnotes` renders the mechanical sections |
 | `collect-github.sh` | all GitHub reads in one pass — the per-branch PR lookups are a single GraphQL query rather than one ~15s call each |
-| `read-handoff.sh` | agent handoff files, capped |
+| `read-handoff.sh` | agent handoff files, capped, each headed with the path it came from |
+| `handoff-path.sh` | shared by the two above: which handoff file a row means, skipping an earlier run's files left in `.claude/lead/` |
 | `collect.sh` | runs all three; the entire data-gathering phase in one call |
 | `render.py` | `board.json` → page. Every count is an array length, so tiles cannot drift from content |
 | `build.sh` | renders, then wraps in the static chrome |

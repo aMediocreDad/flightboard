@@ -43,11 +43,15 @@
 # Both are computed for item rows only — they are per-item detail, and paying
 # for them across every checkout under the roots would dominate the scan.
 # handoff: comma-joined AGENT_STATUS.md / PR_BODY.md / BRIEF.md in the checkout's
-#          .claude/lead/ (older runs: its gitdir).
+#          .claude/lead/ (older runs: its gitdir). On a feature branch, files
+#          older than the branch are an earlier run's and are left out; see
+#          handoff-path.sh.
 # repo_slug: owner/repo parsed from origin, "-" when there is no remote. The
 #   caller needs this to hit the GitHub API without guessing owners.
 
 set -o pipefail
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$here/handoff-path.sh"
 mode=${1:-}
 now=$(date +%s)
 depth=${FLIGHTBOARD_DEPTH:-4}
@@ -89,10 +93,14 @@ discover() {
         # /delegate parks its runs) sits below the depth cap. Ask git for the
         # linked worktrees so each gets a full row, not just the @WT footnote.
         # Only those under this root: one parked outside every root is what the
-        # @WT footnote exists to flag.
+        # @WT footnote exists to flag. Every live worktree is also recorded in
+        # $wtl, so the footnote needs no second `git worktree list` per checkout.
+        # A registered worktree whose directory is gone (prunable) is skipped.
         git -C "$d" worktree list --porcelain 2>/dev/null \
-        | awk '/^worktree /{print $2}' \
+        | awk '/^worktree /{sub(/^worktree /, ""); print}' \
         | while IFS= read -r wt; do
+            [ -d "$wt" ] || continue
+            printf '%s\n' "$wt" >> "$wtl"
             case "$wt" in "$root"/*) printf '%s\t%s\n' "$root" "$wt" ;; esac
           done
       done
@@ -142,8 +150,8 @@ if [ "$mode" = "--dead-check" ]; then
   exit 0
 fi
 
+wtl=$(mktemp); known=$(mktemp); trap 'rm -f "$wtl" "$known"' EXIT
 pairs=$(discover)
-known=$(mktemp); trap 'rm -f "$known"' EXIT
 printf '%s\n' "$pairs" | cut -f2 > "$known"
 
 scan() {
@@ -165,15 +173,6 @@ scan() {
       else
         unpushed=all
       fi
-      # Handoff files live in the checkout's .claude/lead/ (kept out of commits
-      # by the repo's .git/info/exclude); the gitdir is where older runs left them.
-      gd=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null)
-      files=""
-      for f in AGENT_STATUS.md PR_BODY.md BRIEF.md; do
-        if [ -f "$d/.claude/lead/$f" ] || [ -f "$gd/$f" ]; then files="${files}${f},"; fi
-      done
-      files=${files%,}
-
       slug=$(git -C "$d" remote get-url origin 2>/dev/null \
              | sed -E 's#^(git@[^:]+:|ssh://[^/]+/|https?://[^/]+/)##; s#\.git$##')
       [ -n "$slug" ] || slug='-'
@@ -185,13 +184,21 @@ scan() {
       fi
 
       # Is the checked-out branch the repo's default?
-      if [ -z "$default" ] || [ "$default" = "-" ]; then
-        case "$branch" in main|master) on_default=y ;; *) on_default=n ;; esac
-      elif [ "$branch" = "$default" ]; then
-        on_default=y
-      else
-        on_default=n
-      fi
+      on_default=$(handoff_on_default "$branch" "${default:--}")
+
+      # Handoff files: .claude/lead/ first, gitdir for older runs, and on a
+      # feature branch only files younger than the branch (handoff-path.sh).
+      # The skipped ones go out as @ST lines for the footnotes, not dropped.
+      gd=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null)
+      born=$(handoff_born "$d" "$branch" "$on_default")
+      files=""
+      for f in AGENT_STATUS.md PR_BODY.md BRIEF.md; do
+        handoff_path "$d" "$gd" "$f" "$born" >/dev/null && files="${files}${f},"
+      done
+      files=${files%,}
+      handoff_stale "$d" "$gd" "$born" | while IFS= read -r sp; do
+        printf '@ST\t%s\t%s\n' "$sp" "${branch:--detached-}"
+      done
 
       if [ "$last_epoch" -eq 0 ]; then          kind=scrap
       elif [ -z "$branch" ]; then               kind=oddball
@@ -227,18 +234,6 @@ scan() {
         "$d" "$kind" "${branch:--detached-}" "${default:--}" \
         "$dirty" "$last_iso" "$age" "$unpushed" "${files:--}" "$slug" "$rel" \
         "$ahead" "${dirty_files:--}"
-
-      # Linked worktrees can live anywhere — outside every root, or nested inside
-      # a repo (.claude/worktrees/...). Ask git rather than trusting the roots to
-      # reach them: work parked somewhere unswept is exactly what this surfaces.
-      git -C "$d" worktree list --porcelain 2>/dev/null \
-      | awk '/^worktree /{print $2}' \
-      | while read -r wt; do
-          grep -qxF "$wt" "$known" && continue
-          wb=$(git -C "$wt" branch --show-current 2>/dev/null)
-          wi=$(git -C "$wt" log -1 --format=%cs 2>/dev/null)
-          printf '@WT\t%s\t%s\t%s\n' "$wt" "${wb:--detached-}" "${wi:--}"
-        done
     ) &
     while [ "$(jobs -rp | wc -l)" -ge 12 ]; do wait -n 2>/dev/null || break; done
   done <<< "$pairs"
@@ -254,8 +249,19 @@ if [ "$mode" = "--roots" ]; then
 fi
 
 all=$(scan)
-rows=$(printf '%s\n' "$all" | grep -v '^@WT	' | sort -t$'\t' -k1,1)
-stray=$(printf '%s\n' "$all" | grep '^@WT	' | sort -u -t$'\t' -k2,2)
+rows=$(printf '%s\n' "$all" | grep -v '^@ST	' | sort -t$'\t' -k1,1)
+# Handoff files skipped as older than their branch: an earlier run's, left in
+# .claude/lead/ (or the gitdir). Listed so they get deleted, not just hidden.
+stale=$(printf '%s\n' "$all" | grep '^@ST	' | sort -u -t$'\t' -k2,2)
+
+# Linked worktrees can live anywhere. discover() recorded every live one in
+# $wtl; those that got no row (outside every root) are parked somewhere
+# unswept, which is exactly what the @WT footnote surfaces.
+stray=$(sort -u "$wtl" | grep -vxF -f "$known" | while IFS= read -r wt; do
+  wb=$(git -C "$wt" branch --show-current 2>/dev/null)
+  wi=$(git -C "$wt" log -1 --format=%cs 2>/dev/null)
+  printf '@WT\t%s\t%s\t%s\n' "$wt" "${wb:--detached-}" "${wi:--}"
+done)
 
 short() { printf '%s' "$1" | sed "s|^$HOME|~|"; }
 
@@ -315,18 +321,23 @@ case "$mode" in
       echo "  </ul>"
       echo "</details>"
     fi
-    if [ -n "$od$lf$stray" ]; then
+    if [ -n "$od$lf$stray$stale" ]; then
       echo "<details>"
-      echo "  <summary>Oddballs <span class=\"count\">— $(( $(c "$od") + $(c "$lf") + $(c "$stray") ))</span></summary>"
+      echo "  <summary>Oddballs <span class=\"count\">— $(( $(c "$od") + $(c "$lf") + $(c "$stray") + $(c "$stale") ))</span></summary>"
       echo "  <ul>"
       printf '%s\n' "$od" | grep -q . && printf '%s\n' "$od" | while IFS=$'\t' read -r p iso _; do
         echo "    <li><code>$(short "$p")</code> — detached HEAD, last commit ${iso}. Re-checkout its default branch.</li>"
       done
       printf '%s\n' "$lf" | grep -q . && printf '%s\n' "$lf" | while IFS=$'\t' read -r p iso _; do
-        echo "    <li><code>$(short "$p")</code> — <code>PR_BODY.md</code> left behind while sitting on the default branch (${iso}).</li>"
+        # On the default branch nothing is age-filtered, so born is empty.
+        pb=$(handoff_path "$p" "$(git -C "$p" rev-parse --absolute-git-dir 2>/dev/null)" PR_BODY.md "")
+        echo "    <li><code>$(short "$p")</code> — <code>$(short "$pb")</code> left behind while sitting on the default branch (${iso}).</li>"
       done
       printf '%s\n' "$stray" | grep -q . && printf '%s\n' "$stray" | while IFS=$'\t' read -r _ wt wb wi; do
         echo "    <li><code>$(short "$wt")</code> — linked worktree outside the swept roots, on <code>${wb}</code> (${wi}).</li>"
+      done
+      printf '%s\n' "$stale" | grep -q . && printf '%s\n' "$stale" | while IFS=$'\t' read -r _ sp sb; do
+        echo "    <li><code>$(short "$sp")</code> — from an earlier run: older than <code>${sb}</code>, the branch now checked out there. Delete it.</li>"
       done
       echo "  </ul>"
       echo "</details>"
