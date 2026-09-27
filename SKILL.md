@@ -11,7 +11,7 @@ One pass that answers "where is my work?" across every checkout under
 the configured roots and every open PR on GitHub, triaged by what needs
 the user now.
 It reads the handoff files agents already write (`AGENT_STATUS.md`,
-`PR_BODY.md`, `BRIEF.md` in each gitdir) so delegated work surfaces
+`PR_BODY.md`, `BRIEF.md` in each checkout's `.claude/lead/`) so delegated work surfaces
 without extra bookkeeping. **Read-only**: it proposes dispositions, it
 never pushes, closes, deletes, or comments.
 
@@ -179,7 +179,7 @@ bash <skill-dir>/build.sh <scratchpad>/board.json \
   (`-B/-H/-t/-F`; without `--base` gh resolves base == head and errors, which
   is what `HEAD_LOOKUP`'s `repo default IS this branch` warns about),
   `gh repo edit <slug> --default-branch <name>`, `gh pr list -R <slug>`.
-  `/lead <intent>` reads `$(git rev-parse --git-dir)/BRIEF.md` on its own.
+  `/lead <intent>` reads `.claude/lead/BRIEF.md` on its own.
 - **Never type a count.** Every tile number and section heading is derived
   from an array length by `render.py`. That is the point of the schema.
   Footnote counts default to `— <len(items)>` too, so omit `count` unless the

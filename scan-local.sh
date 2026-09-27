@@ -42,7 +42,8 @@
 #   leave out without the caller shelling out for `git status`.
 # Both are computed for item rows only — they are per-item detail, and paying
 # for them across every checkout under the roots would dominate the scan.
-# handoff: comma-joined AGENT_STATUS.md / PR_BODY.md / BRIEF.md in the gitdir.
+# handoff: comma-joined AGENT_STATUS.md / PR_BODY.md / BRIEF.md in the checkout's
+#          .claude/lead/ (older runs: its gitdir).
 # repo_slug: owner/repo parsed from origin, "-" when there is no remote. The
 #   caller needs this to hit the GitHub API without guessing owners.
 
@@ -82,7 +83,18 @@ discover() {
          \( -name node_modules -o -name .venv -o -name vendor -o -name target \) -prune \
          -o -name .git -print 2>/dev/null \
     | while IFS= read -r g; do
-        printf '%s\t%s\n' "$root" "$(dirname "$g")"
+        d=$(dirname "$g")
+        printf '%s\t%s\n' "$root" "$d"
+        # A worktree nested inside its repo (.claude/worktrees/<name>, where
+        # /delegate parks its runs) sits below the depth cap. Ask git for the
+        # linked worktrees so each gets a full row, not just the @WT footnote.
+        # Only those under this root: one parked outside every root is what the
+        # @WT footnote exists to flag.
+        git -C "$d" worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{print $2}' \
+        | while IFS= read -r wt; do
+            case "$wt" in "$root"/*) printf '%s\t%s\n' "$root" "$wt" ;; esac
+          done
       done
   done < <(roots) | sort -u -t$'\t' -k2,2
 }
@@ -153,10 +165,12 @@ scan() {
       else
         unpushed=all
       fi
+      # Handoff files live in the checkout's .claude/lead/ (kept out of commits
+      # by the repo's .git/info/exclude); the gitdir is where older runs left them.
       gd=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null)
       files=""
       for f in AGENT_STATUS.md PR_BODY.md BRIEF.md; do
-        [ -f "$gd/$f" ] && files="${files}${f},"
+        if [ -f "$d/.claude/lead/$f" ] || [ -f "$gd/$f" ]; then files="${files}${f},"; fi
       done
       files=${files%,}
 
@@ -309,7 +323,7 @@ case "$mode" in
         echo "    <li><code>$(short "$p")</code> — detached HEAD, last commit ${iso}. Re-checkout its default branch.</li>"
       done
       printf '%s\n' "$lf" | grep -q . && printf '%s\n' "$lf" | while IFS=$'\t' read -r p iso _; do
-        echo "    <li><code>$(short "$p")</code> — <code>PR_BODY.md</code> left in the gitdir while sitting on the default branch (${iso}).</li>"
+        echo "    <li><code>$(short "$p")</code> — <code>PR_BODY.md</code> left behind while sitting on the default branch (${iso}).</li>"
       done
       printf '%s\n' "$stray" | grep -q . && printf '%s\n' "$stray" | while IFS=$'\t' read -r _ wt wb wi; do
         echo "    <li><code>$(short "$wt")</code> — linked worktree outside the swept roots, on <code>${wb}</code> (${wi}).</li>"
