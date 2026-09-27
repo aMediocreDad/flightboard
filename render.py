@@ -178,6 +178,13 @@ def main():
     o += render_cards(needs) if needs else [
         '<p style="color: var(--muted);">Nothing is blocked on you.</p>', ""]
 
+    waiting = b.get("promises", {}).get("waiting", [])
+    if waiting:
+        total = sum(w["count"] for w in waiting)
+        o.append(heading("promises", "Promises waiting", f"{total} · tower"))
+        o += render_table(["Repo", "Waiting"], [
+            f'    <tr><td>{esc(w["repo"])}</td><td>{w["count"]}</td></tr>' for w in waiting])
+
     o.append(heading("flight", "In flight", f"{len(flight)} · active ≤ 14 days"))
     o += (render_table(["Item", "Repo", "Last activity", "Status"], render_rows(flight))
           if flight else

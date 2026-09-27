@@ -60,6 +60,20 @@ exist. One dead search also empties `PR_STATE`, which derives from it. Only
 the searches need redoing, so re-run the GitHub half alone:
 `bash <skill-dir>/collect-github.sh <scratchpad>/flightboard/scan.tsv`.
 
+**A `### TOWER_FAILED` marker also means stop — do not publish.** Tower's
+ledger could not be read, so an empty promise list would read as "nothing
+promised". `### TOWER_ABSENT` is fine: tower is not installed, skip its cards.
+
+**Tower promises** (from `### TOWER`, the output of `tower list --json`):
+- Each promise with `status: "due"` → a `needsYou` card: title = the promise
+  title, meta = repo · branch · trigger, `command` = `tower promise done <id>`.
+- Each promise with `approval: "pending"` → a `needsYou` card with
+  `chip: "approve"` and `command` = `tower promise approve <id>`; quote the
+  check command in a para so Filip sees what he approves.
+- Each deadline with `overdue: true` → a `needsYou` card (`chip: "overdue"`).
+- Any `errors` → one `needsYou` card titled "Tower errors", one para per error.
+- Waiting promises → `"promises": {"waiting": [{"repo": "<repo>", "count": <n>}]}`.
+
 Item rows carry `ahead` (commits ahead of the **default** branch — the number
 a card quotes, not `unpushed`, which counts against the branch's own upstream)
 and `dirty_files` (up to 3 uncommitted paths, so a card can name what a PR
@@ -151,6 +165,7 @@ all on the card. Anything you would have said in the terminal belongs in
   "issues": { "rows": [], "note": "…", "label": "…" },  // note shows when rows
                                                  //   is empty; label renames
                                                  //   the heading suffix
+  "promises": { "waiting": [{ "repo": "heimdal", "count": 2 }] },  // optional; from ### TOWER
   "footnotes": [{ "summary": "…", "items": ["…"], "note": "…",
                   "count": "— 1 ready, 2 blocked" }]  // count is DERIVED from
                                  //   items — pass it only to say something a

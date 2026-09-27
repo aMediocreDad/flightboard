@@ -41,3 +41,22 @@ bash "$here/scan-local.sh" --dead-check "$out/scan.tsv"
 echo
 echo "### HANDOFF"
 cat "$out/handoff.txt"
+
+# Tower (spec: ~/repos/personal/tower, 11.1 "Flightboard side"). Absent is not
+# an error; a failed call is, and SKILL.md treats it like GITHUB_SEARCH_FAILED.
+echo
+if command -v tower >/dev/null 2>&1; then
+  tower tick --probe-only >/dev/null 2>"$out/tower.err"; trc=$?
+  if [ "$trc" -ne 0 ] && [ "$trc" -ne 7 ]; then
+    echo "### TOWER_FAILED"; echo "tower tick --probe-only exited $trc"; head -5 "$out/tower.err"
+  else
+    tower list --json > "$out/tower.json" 2>"$out/tower.err"; lrc=$?
+    if [ "$lrc" -eq 0 ]; then
+      echo "### TOWER"; cat "$out/tower.json"
+    else
+      echo "### TOWER_FAILED"; echo "tower list --json exited $lrc"; head -5 "$out/tower.err"
+    fi
+  fi
+else
+  echo "### TOWER_ABSENT"
+fi
