@@ -29,6 +29,68 @@ _LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 _BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _ITAL = re.compile(r"\*([^*]+)\*")
 
+# Bidi controls, zero-width/invisible characters and line/paragraph
+# separators that can reorder or hide text without changing what runs.
+# Mirrors tower's `isBidiOrInvisible` (src/textSafety.ts) exactly, so text
+# that started life in a `needs_you` card renders identically here.
+_BIDI_OR_INVISIBLE_RANGES = (
+    (0x00AD, 0x00AD),
+    (0x061C, 0x061C),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x2028, 0x2029),
+    (0x202A, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x2069),
+    (0xFEFF, 0xFEFF),
+)
+
+# A hex (&#x202E;), decimal (&#8238;) or named (&rlm;, &shy;, &zwnj;) HTML
+# character reference. Matched so its *decoded* value can be checked against
+# the mandated set before any html.escape runs — otherwise a reference that
+# decodes to a bidi/invisible character reaches the browser raw and is
+# decoded there instead, defeating the code-point scan below.
+_CHAR_REF = re.compile(r"&(#[xX][0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);")
+
+
+def _is_bidi_or_invisible(cp):
+    return any(lo <= cp <= hi for lo, hi in _BIDI_OR_INVISIBLE_RANGES)
+
+
+def _neutralize_char_ref(m):
+    decoded = html.unescape(m.group(0))
+    if len(decoded) == 1 and _is_bidi_or_invisible(ord(decoded)):
+        return f"\\u{{{ord(decoded):04X}}}"
+    return m.group(0)  # not a single mandated char (e.g. &amp;, &lt;) — untouched
+
+
+def neutralize(s):
+    """Render bidi-override and zero-width/invisible characters — whether
+    literal or spelled out as an HTML character reference (hex, decimal or
+    named: ``&#x202E;``, ``&#8238;``, ``&rlm;``, ``&shy;``, ``&zwnj;``, …) —
+    as visible literal text (``\\u{XXXX}``, uppercase hex) instead of passing
+    them through raw. A reference is only rewritten when it decodes to
+    exactly one mandated character; every other reference (``&amp;``,
+    ``&lt;``, an unknown or multi-character name) is left untouched, so
+    `esc()`'s later `html.escape` still makes it inert as usual. Ordinary
+    non-ASCII text (Norwegian letters, emoji) passes through unchanged.
+    Called from `md()` (so all prose is covered, not only code spans) and
+    from `esc()` (attribute values and other text that bypasses `md()`);
+    idempotent, so a value already neutralized by its caller is unaffected
+    by a repeat call.
+    """
+    if not isinstance(s, str):
+        return s
+    s = _CHAR_REF.sub(_neutralize_char_ref, s)
+    out = []
+    for ch in s:
+        cp = ord(ch)
+        if _is_bidi_or_invisible(cp):
+            out.append(f"\\u{{{cp:04X}}}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
 
 def md(s):
     """Inline markdown for prose fields: `code`, [text](url), **bold**, *italic*.
@@ -36,9 +98,16 @@ def md(s):
     Raw HTML still passes through untouched — this only spares the author the
     `\"` escaping that dominates an HTML-in-JSON string. Code spans are pulled
     out first so their contents are never re-processed.
+
+    Bidi-override and zero-width/invisible characters are neutralized up
+    front, before any markdown substitution runs, so they cannot hide inside
+    plain prose, link text, bold or italic — not just inside code spans or
+    attribute values. Untrusted text (e.g. a tower `needs_you` title or
+    detail) reaches the page through this function as `title`/`meta`/`paras`.
     """
     if not isinstance(s, str):
         return s
+    s = neutralize(s)
     spans = []
 
     def stash(m):
@@ -59,7 +128,7 @@ def fail(msg):
 
 def esc(s):
     """Escape a value used as an HTML attribute. Prose is trusted as markup."""
-    return html.escape(str(s), quote=True)
+    return html.escape(neutralize(str(s)), quote=True)
 
 
 def chip(text, cls):
@@ -96,7 +165,7 @@ def render_cards(cards):
         if c.get("note"):
             out.append(f'  <p class="note">{md(c["note"])}</p>')
         if c.get("command"):
-            out.append(f'  <pre><code>{html.escape(c["command"], quote=False)}</code></pre>')
+            out.append(f'  <pre><code>{html.escape(neutralize(c["command"]), quote=False)}</code></pre>')
         out.append("</div>")
         out.append("")
     return out
