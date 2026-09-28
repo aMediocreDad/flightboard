@@ -65,14 +65,24 @@ ledger could not be read, so an empty promise list would read as "nothing
 promised". `### TOWER_ABSENT` is fine: tower is not installed, skip its cards.
 
 **Tower promises** (from `### TOWER`, the output of `tower list --json`):
-- Each promise with `status: "due"` → a `needsYou` card: title = the promise
-  title, meta = repo · branch · trigger, `command` = `tower promise done <id>`.
-- Each promise with `approval: "pending"` → a `needsYou` card with
-  `chip: "approve"` and `command` = `tower promise approve <id>`; quote the
-  check command in a para so Filip sees what he approves.
-- Each deadline with `overdue: true` → a `needsYou` card (`chip: "overdue"`).
-- Any `errors` → one `needsYou` card titled "Tower errors", one para per error.
-- Waiting promises → `"promises": {"waiting": [{"repo": "<repo>", "count": <n>}]}`.
+- When the JSON has a `needs_you` array (tower phase 2 and later), make one
+  `needsYou` card per item: title = `title`, meta = `kind` plus `detail` when
+  it is not empty, `command` = `command` when it is not null. Tower has
+  already merged pending approvals, due and failed promises, blockers
+  ("unlock YubiKey: blocks 2 runs"), deadlines within 3 days, orphan
+  worktrees and its own errors into that list, so do **not** also derive
+  cards from `promises`, `deadlines` or `errors`. If `runs.open` has rows
+  with `status: "running"`, add the para "N tower runs in progress".
+- Without `needs_you` (a phase-1 tower), derive the cards instead:
+  - Each promise with `status: "due"` → a `needsYou` card: title = the
+    promise title, meta = repo · branch · trigger, `command` =
+    `tower promise done <id>`.
+  - Each promise with `approval: "pending"` → a `needsYou` card with
+    `chip: "approve"` and `command` = `tower promise approve <id>`; quote the
+    check command in a para so Filip sees what he approves.
+  - Each deadline with `overdue: true` → a `needsYou` card (`chip: "overdue"`).
+  - Any `errors` → one `needsYou` card titled "Tower errors", one para per error.
+- Waiting promises (both versions) → `"promises": {"waiting": [{"repo": "<repo>", "count": <n>}]}`.
 
 Item rows carry `ahead` (commits ahead of the **default** branch — the number
 a card quotes, not `unpushed`, which counts against the branch's own upstream)
