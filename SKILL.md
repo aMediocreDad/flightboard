@@ -41,6 +41,11 @@ Two things, **both in the same message** — they do not depend on each other:
    `bash`, never under the session's zsh — the fan-out needs bash
    word-splitting.
 
+   Run each collector exactly in the shape shown, with `<skill-dir>` written
+   out as an absolute path: no env prefix such as `TMPDIR=`, no `bash -c`
+   wrapper, no `;` chain. Only that bare shape matches the sandbox exclusion
+   that lets the GitHub reads out.
+
 2. Artifact `action: "read"` on the URL in
    `$FLIGHTBOARD_STATE/dashboard-url`.
 
