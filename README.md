@@ -94,6 +94,17 @@ a checkout's `.claude/lead/` — they are read too, so delegated work reports it
 status without extra bookkeeping. If you don't, nothing changes; that section
 simply stays empty.
 
+## Reviews before merging
+
+Every open PR of yours and every PR you are requested on carries a review
+state: has Claude reviewed it at its current head commit? `/flightboard review`
+works through the ones that are unreviewed or stale, one at a time, through
+Claude Code's `code-review` skill, and logs each verdict against the commit it
+reviewed. New commits make that review stale, so a PR only reads "reviewed
+clean" for the code that is there now. Findings stay local unless you ask for
+them to be posted as PR comments. A teammate's PR is reviewed from its diff:
+its code is never installed, built or run.
+
 ## How it is built
 
 Almost everything is mechanical, and lives in scripts rather than being
@@ -104,6 +115,8 @@ regenerated each run. Only judgment is written by hand.
 | `scan-local.sh` | classifies every checkout; `--footnotes` renders the mechanical sections |
 | `collect-github.sh` | all GitHub reads in one pass — the per-branch PR lookups are a single GraphQL query rather than one ~15s call each |
 | `read-handoff.sh` | agent handoff files, capped |
+| `review-state.py` | joins each open PR's head commit with the review ledger |
+| `record-review.sh` | logs one review verdict to `$FLIGHTBOARD_STATE/reviews.tsv` |
 | `collect.sh` | runs all three; the entire data-gathering phase in one call |
 | `render.py` | `board.json` → page. Every count is an array length, so tiles cannot drift from content |
 | `build.sh` | renders, then wraps in the static chrome |

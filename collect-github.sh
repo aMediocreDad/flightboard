@@ -96,6 +96,42 @@ prstate() {
 export -f prstate
 xargs -P 8 -L1 bash -c 'prstate "$@"' _ < "$tmp/recent"
 
+# --- has Claude reviewed each open PR at its current head? -------------------
+# Every open PR of the user's plus every review request, so nothing reaches a
+# merge without one. Heads come from one aliased GraphQL query, then
+# review-state.py joins them with the ledger record-review.sh writes. A review
+# of an older head reads as stale: new commits need a new review.
+jq -r '.[] | [.repository.nameWithOwner, .number, (if .isDraft then "draft" else "mine" end)] | @tsv' \
+  "$tmp/mine.json" > "$tmp/review-prs.tsv"
+jq -r '.[] | [.repository.nameWithOwner, .number, "requested"] | @tsv' "$tmp/rr.json" >> "$tmp/review-prs.tsv"
+echo
+if [ -s "$tmp/review-prs.tsv" ]; then
+  python3 - "$tmp/review-prs.tsv" > "$tmp/rq.graphql" <<'PY'
+import sys
+print("query {")
+for i, line in enumerate(open(sys.argv[1])):
+    slug, num, _ = line.rstrip("\n").split("\t")
+    owner, _, name = slug.partition("/")
+    print(f'  p{i}: repository(owner: "{owner}", name: "{name}") {{'
+          f' pullRequest(number: {int(num)}) {{ headRefOid }} }}')
+print("}")
+PY
+  if gh api graphql -F query=@"$tmp/rq.graphql" > "$tmp/rq.json" 2>"$tmp/rq.err"; then
+    paste "$tmp/review-prs.tsv" <(jq -r '.data | to_entries
+        | sort_by(.key | ltrimstr("p") | tonumber)[]
+        | (.value.pullRequest.headRefOid // "-")' "$tmp/rq.json") > "$tmp/review-heads.tsv"
+    python3 "$(dirname "$0")/review-state.py" "$tmp/review-heads.tsv" \
+      "${FLIGHTBOARD_STATE:-$HOME/.claude/flightboard/state}/reviews.tsv"
+  else
+    collect_fail=1
+    echo "### REVIEW_STATE"
+    echo "# GraphQL head lookup for reviews failed:"; sed 's/^/# /' "$tmp/rq.err" | head -5
+    { echo "GraphQL review head lookup failed:"; sed 's/^/  /' "$tmp/rq.err" | head -3; } >&2
+  fi
+else
+  echo "### REVIEW_STATE	repo	num	role	head	status	reviewed"
+fi
+
 # --- has a PR ever existed for each live local branch? ----------------------
 # Item rows younger than 56 days only: the dead pile is grouped, never verified.
 awk -F'\t' '$2=="item" && $7>=0 && $7<=56 && $10!="-" {print $10"\t"$3}' "$scan" > "$tmp/heads.tsv"
