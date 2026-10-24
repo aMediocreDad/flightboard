@@ -248,7 +248,10 @@ every PR the user merges or approves has a Claude review at its current head.
 
 1. **Queue.** The PRs the user named; otherwise run Collect and take every
    `### REVIEW_STATE` row whose status is `unreviewed` or `stale:*`. Drafts
-   (role `draft`) only when the user asks. Say how many are queued.
+   (role `draft`) only when the user asks. Skip PRs the triage puts in the
+   dead pile (`updated` in `MY_PRS` or `REVIEW_REQUESTS` more than 56 days
+   ago) unless the user names them: a review of abandoned work is wasted. Say
+   how many are queued and how many were skipped as dead.
 2. **Per PR, one at a time:**
    - Read the full head sha first:
      `gh pr view <n> -R <repo> --json headRefOid -q .headRefOid`. Record
