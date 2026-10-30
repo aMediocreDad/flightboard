@@ -45,6 +45,7 @@ NON_CODE_NAMES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.loc
 LEAD_FILES = ("BRIEF.md", "VERIFICATION.md", "VERDICT.md", "REVIEW.md", "AGENT_STATUS.md",
               "PR_BODY.md")
 WORK = os.path.join(".claude", "work")
+CLOSED = {"done", "no changes left"}
 CLOSED_SHOWN = 5
 DECISIONS_SHOWN = 10
 
@@ -135,7 +136,7 @@ class Ledger:
     def open_slug(self, session, root, title_of, base=None):
         """title_of is called only when a new slug opens: reading the transcript is not free."""
         for sid, s in self.state["slugs"].items():
-            if s["session"] == session and s["root"] == root and s["status"] != "done":
+            if s["session"] == session and s["root"] == root and s["status"] not in CLOSED:
                 return sid, s
         title = title_of()
         day = datetime.datetime.now().strftime("%m%d")
@@ -153,9 +154,9 @@ class Ledger:
 
     def write_now(self):
         slugs = self.state["slugs"]
-        open_ = sorted(((k, v) for k, v in slugs.items() if v["status"] != "done"),
+        open_ = sorted(((k, v) for k, v in slugs.items() if v["status"] not in CLOSED),
                        key=lambda kv: kv[1]["opened"])
-        done = sorted(((k, v) for k, v in slugs.items() if v["status"] == "done"),
+        done = sorted(((k, v) for k, v in slugs.items() if v["status"] in CLOSED),
                       key=lambda kv: kv[1]["updated"], reverse=True)[:CLOSED_SHOWN]
         out = [f"# Work in {os.path.basename(self.main)}", f"Updated: {stamp()}", "", "## Open"]
         for k, v in open_:
@@ -165,7 +166,7 @@ class Ledger:
         if not open_:
             out.append("- none")
         out += ["", "## Recently closed"]
-        out += [f"- {k} · {v['updated']} · {v['branch']} · "
+        out += [f"- {k} · {v['status']} · {v['updated']} · {v['branch']} · "
                 f"{', '.join(v['commits'][-2:]) or 'no commits'} · {v['title']}" for k, v in done]
         if not done:
             out.append("- none")
@@ -241,7 +242,7 @@ def ignored(root, rel):
     return git(root, "check-ignore", "-q", "--", rel) is not None
 
 
-def record(data, root, rels, base=None):
+def record(data, root, rels, base=None, authored=()):
     """Open (or reuse) this session's slug in root's checkout and add the code files."""
     rels = [r for r in rels if is_code(r) and not ignored(root, r)]
     if not rels:
@@ -257,6 +258,9 @@ def record(data, root, rels, base=None):
         for rel in rels:
             if rel not in s["files"]:
                 s["files"].append(rel)
+        for h in authored:
+            if h not in s.setdefault("authored", []):
+                s["authored"].append(h)
         s["updated"] = stamp()
     finally:
         led.close()
@@ -280,36 +284,81 @@ def snapshot(root):
                         for ln in status.splitlines() if ln.strip())
 
 
+def reflog(root):
+    """HEAD's reflog for this worktree, newest first, as (hash, subject) pairs."""
+    out = git(root, "reflog", "--format=%H%x09%gs") or ""
+    return [tuple(ln.split("\t", 1)) for ln in out.splitlines() if "\t" in ln]
+
+
+def authored_commits(root, pre_len, pre_head=""):
+    """Commits created in this checkout since its reflog had pre_len entries, newest first.
+
+    The HEAD reflog is per worktree and says how HEAD moved: "commit: …",
+    "commit (amend): …". A checkout, pull, merge or rebase moves HEAD too, but is not
+    authoring, so its commits are never credited to the session that ran it. Counting
+    entries, not timestamps, keeps a commit made a moment before the call out of it;
+    one already in pre_head's history is skipped as a second guard.
+    """
+    entries = reflog(root)
+    hashes = []
+    for h, gs in entries[:max(0, len(entries) - pre_len)]:
+        if not gs.startswith("commit") or h in hashes:
+            continue
+        if pre_head and git(root, "merge-base", "--is-ancestor", h, pre_head) is not None:
+            continue
+        hashes.append(h)
+    return hashes
+
+
+def commit_files(root, hashes):
+    files = set()
+    for h in hashes:
+        out = git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", h) or ""
+        files |= {ln.strip() for ln in out.splitlines() if ln.strip()}
+    return files
+
+
 def snapshot_path(session):
     return session_index(session)[:-4] + ".bash.json"
 
 
-def on_prebash(data):
-    root = checkout_root(data.get("cwd") or "")
-    if not root:
-        return
-    head, dirty = snapshot(root)
-    with open(snapshot_path(data.get("session_id", "unknown")), "w") as f:
-        json.dump({"root": root, "head": head, "dirty": dirty}, f)
-
-
-def on_postbash(data):
-    p = snapshot_path(data.get("session_id", "unknown"))
+def settle(data, p):
+    """Compare a pending pre-Bash snapshot with the checkout now, record the difference."""
     try:
         with open(p) as f:
             pre = json.load(f)
     except (OSError, ValueError):
         return
+    finally:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
     root = pre["root"]
     if not os.path.isdir(root):
         return
-    head, dirty = snapshot(root)
-    rels = set(dirty) - set(pre["dirty"])
-    if head and pre["head"] and head != pre["head"]:
-        out = git(root, "diff", "--name-only", pre["head"], head) or ""
-        rels |= {ln.strip() for ln in out.splitlines() if ln.strip()}
+    _, dirty = snapshot(root)
+    authored = authored_commits(root, pre.get("reflog", 0), pre.get("head", ""))
+    rels = (set(dirty) - set(pre["dirty"])) | commit_files(root, authored)
     if rels:
-        record(data, root, sorted(rels), base=pre["head"] or None)
+        record(data, root, sorted(rels), base=pre["head"] or None,
+               authored=[h[:7] for h in authored])
+
+
+def on_prebash(data):
+    p = snapshot_path(data.get("session_id", "unknown"))
+    if os.path.exists(p):
+        settle(data, p)  # the previous call's PostToolUse never ran (it failed or was cut)
+    root = checkout_root(data.get("cwd") or "")
+    if not root:
+        return
+    head, dirty = snapshot(root)
+    with open(p, "w") as f:
+        json.dump({"root": root, "head": head, "dirty": dirty, "reflog": len(reflog(root))}, f)
+
+
+def on_postbash(data):
+    settle(data, snapshot_path(data.get("session_id", "unknown")))
 
 
 def on_stop(data):
@@ -325,7 +374,7 @@ def on_stop(data):
             # session ended before its commit would otherwise stay open forever. Judgment
             # calls belong to this session's slugs only.
             for sid, s in led.state["slugs"].items():
-                if s["status"] != "done":
+                if s["status"] not in CLOSED:
                     changed |= update_slug(led, sid, s, calls if s["session"] == session else [])
         finally:
             led.close(changed)
@@ -340,9 +389,14 @@ def update_slug(led, sid, s, calls):
         return True
     status = git(root, "status", "--porcelain", "--", *files) if files else ""
     dirty = [ln[3:].strip() for ln in (status or "").splitlines() if ln.strip()]
-    log = git(root, "log", "--format=%h %s", f"{s['base']}..HEAD", "--", *files) \
-        if files and s.get("base") else ""
-    commits = [c for c in (log or "").splitlines() if c.strip()]
+    commits = []
+    for h in s.get("authored", []):
+        line = (git(root, "log", "-1", "--format=%h %s", h) or "").strip()
+        if line:
+            commits.append(line)
+    if not commits and files and s.get("base"):
+        log = git(root, "log", "--format=%h %s", f"{s['base']}..HEAD", "--", *files) or ""
+        commits = [c for c in log.splitlines() if c.strip()]
     verdict = None
     vpath = os.path.join(root, ".claude", "lead", "VERDICT.md")
     if os.path.exists(vpath):

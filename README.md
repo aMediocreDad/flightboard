@@ -130,7 +130,9 @@ you restyle the board; nothing else touches presentation.
 `hooks/ledger.py` keeps a ledger of code-changing work per repo, so it outlives
 sessions and worktrees. The first code edit by a session in a checkout opens a
 "slug", whether it goes through the file tools or the shell (each Bash call is
-bracketed by a snapshot of the checkout's HEAD and dirty files). The end of each
+bracketed by a snapshot of the checkout's HEAD and dirty files; of the commits made
+meanwhile, only those the reflog marks "commit" count, never a checkout, pull,
+merge or rebase). The end of each
 turn updates every open slug from git and records the "Judgment calls" bullets
 of the final message. Questions, research, docs-only and gitignored changes
 open nothing.
@@ -147,9 +149,10 @@ the edit happened in, and is added to `.git/info/exclude` automatically:
 | `slugs/<id>/` | A worktree run's `.claude/lead/` files, kept after the worktree is gone |
 
 The sweep shows `NOW.md` beside the other handoff files, and the SessionStart
-hook prints the current repo's open slugs, after compaction too. Known limit:
-commits carry no session id, so two sessions editing the same file in one
-checkout can be credited with each other's commits. Tests:
+hook prints the current repo's open slugs, after compaction too. A slug whose
+changes were reverted closes as "no changes left". Known limit: commits carry no
+session id, so two sessions editing the same file in one checkout can be
+credited with each other's commits. Tests:
 `bash hooks/ledger-fixtures.sh`.
 
 ## Privacy

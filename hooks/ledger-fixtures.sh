@@ -146,6 +146,28 @@ check "gitignored code file opens no slug"          test ! -e "$I/.claude/work/s
 D2="$W/docsbash"; mkrepo "$D2"; bash_call s17 "$D2" 'echo more >> docs/x.md'
 check "docs written through Bash open no slug"      test ! -e "$D2/.claude/work"
 
+# Round-2 findings: only commits the call authored count
+pre_only(){ jq -n --arg s "$1" --arg c "$2" '{session_id:$s,cwd:$c,tool_name:"Bash"}' | python3 -I "$L" prebash; }
+H="$W/headmoves"; mkrepo "$H"
+git -C "$H" checkout -q -b feature; echo f >> "$H/src/app.js"; git -C "$H" commit -qam "feature work"; git -C "$H" checkout -q main
+bash_call s20 "$H" 'git checkout -q feature'
+check "checkout of a branch with commits: no slug"  test ! -e "$H/.claude/work/state.json"
+bash_call s20 "$H" 'git checkout -q main && git merge -q --ff-only feature'
+check "fast-forward merge: no slug"                 test ! -e "$H/.claude/work/state.json"
+RB="$W/rebase"; mkrepo "$RB"; git -C "$RB" checkout -q -b mine
+bash_call s21 "$RB" 'printf "m\n" > src/mine.js && git add src/mine.js && git commit -qm mine'
+git -C "$RB" checkout -q main; printf 't\n' > "$RB/src/trunk.js"; git -C "$RB" add -A; git -C "$RB" commit -qm trunk; git -C "$RB" checkout -q mine
+bash_call s21 "$RB" 'git rebase -q main'
+check "rebase adds no trunk files to the slug"      test "$(state "$RB" '.slugs[].files|join(",")')" = "src/mine.js"
+stop s21 "$RB" ""
+check "rebase adds no trunk commits to the slug"    sh -c "! jq -r '.slugs[].commits|join(\",\")' '$RB/.claude/work/state.json' | grep -q \"\$(git -C '$RB' rev-parse --short=7 main)\""
+FB2="$W/failedbash"; mkrepo "$FB2"
+pre_only s22 "$FB2"; printf "z\n" > "$FB2/src/failed.js"          # the call wrote, then failed: no PostToolUse
+bash_call s22 "$FB2" 'true'                                       # the next call settles it first
+check "failed Bash call's write is still credited"  test "$(state "$FB2" '.slugs[].files|join(",")')" = "src/failed.js"
+check "reverted slug leaves the Open list"          sh -c "! awk '/^## Open/{on=1;next} /^## /{on=0} on' '$RV/.claude/work/NOW.md' | grep -q S-"
+check "...and is listed as closed"                  grep -A5 "^## Recently closed" "$RV/.claude/work/NOW.md" | grep -q "no changes left"
+
 # Never in the way
 check "bad stdin exits 0"                           sh -c "echo '{bad' | python3 -I '$L' edit"
 R2="$W/ro"; mkrepo "$R2"; mkdir -p "$R2/.claude"; chmod a-w "$R2/.claude"
