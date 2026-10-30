@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 # Structured config (.yaml, .json, .toml) counts as code: Helm values and whoami.yaml are
 # real work. Prose, images and lockfiles do not.
@@ -318,8 +319,19 @@ def commit_files(root, hashes):
     return files
 
 
-def snapshot_path(session):
-    return session_index(session)[:-4] + ".bash.json"
+STALE_SNAPSHOT_SECS = 600
+
+
+def snapshot_dir(session):
+    d = session_index(session)[:-4] + ".bash"
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def snapshot_path(data):
+    """One snapshot per Bash call, so overlapping calls (parallel agents) keep their own."""
+    call = "".join(c for c in str(data.get("tool_use_id") or "call") if c.isalnum() or c in "-_")
+    return os.path.join(snapshot_dir(data.get("session_id", "unknown")), f"{call}.json")
 
 
 def settle(data, p):
@@ -345,24 +357,37 @@ def settle(data, p):
                authored=[h[:7] for h in authored])
 
 
+def settle_leftovers(data, older_than=None):
+    """Settle snapshots whose PostToolUse never ran (the call failed or was interrupted)."""
+    d = snapshot_dir(data.get("session_id", "unknown"))
+    for name in sorted(os.listdir(d)):
+        p = os.path.join(d, name)
+        try:
+            age = time.time() - os.path.getmtime(p)
+        except OSError:
+            continue
+        if older_than is None or age > older_than:
+            settle(data, p)
+
+
 def on_prebash(data):
-    p = snapshot_path(data.get("session_id", "unknown"))
-    if os.path.exists(p):
-        settle(data, p)  # the previous call's PostToolUse never ran (it failed or was cut)
+    settle_leftovers(data, older_than=STALE_SNAPSHOT_SECS)
     root = checkout_root(data.get("cwd") or "")
     if not root:
         return
     head, dirty = snapshot(root)
-    with open(p, "w") as f:
+    with open(snapshot_path(data), "w") as f:
         json.dump({"root": root, "head": head, "dirty": dirty, "reflog": len(reflog(root))}, f)
 
 
 def on_postbash(data):
-    settle(data, snapshot_path(data.get("session_id", "unknown")))
+    settle(data, snapshot_path(data))
 
 
 def on_stop(data):
     session = data.get("session_id", "unknown")
+    if data.get("hook_event_name", "Stop") == "Stop":
+        settle_leftovers(data)
     calls = judgment_calls(data.get("last_assistant_message"))
     for main in dict.fromkeys(session_mains(session, data.get("cwd"))):
         if not os.path.exists(os.path.join(main, WORK, "state.json")):
@@ -391,7 +416,10 @@ def update_slug(led, sid, s, calls):
     dirty = [ln[3:].strip() for ln in (status or "").splitlines() if ln.strip()]
     commits = []
     for h in s.get("authored", []):
-        line = (git(root, "log", "-1", "--format=%h %s", h) or "").strip()
+        # An amend or a rebase replaces a commit: list it only while a branch holds it.
+        on_branch = git(root, "merge-base", "--is-ancestor", h, "HEAD") is not None \
+            or (git(root, "for-each-ref", "--contains", h, "--count=1", "refs/heads") or "").strip()
+        line = (git(root, "log", "-1", "--format=%h %s", h) or "").strip() if on_branch else ""
         if line:
             commits.append(line)
     if not commits and files and s.get("base"):

@@ -119,12 +119,13 @@ S12=$(jq -r '.slugs|keys[0]' "$DR/.claude/work/state.json")
 check "a stop with nothing new writes no entry"     test "$(grep -c '^## ' "$DR/.claude/work/slugs/$S12.md")" = 1
 
 # Work done through Bash (the live PokeMath run wrote every file with heredocs and sed -i)
-bash_call(){ sid=$1; cwd=$2; shift 2
-  jq -n --arg s "$sid" --arg c "$cwd" --arg t "$T" '{session_id:$s,cwd:$c,transcript_path:$t,tool_name:"Bash"}' \
-    | python3 -I "$L" prebash
+CALL=0
+hookcall(){ jq -n --arg s "$1" --arg c "$2" --arg t "$T" --arg u "$3" \
+  '{session_id:$s,cwd:$c,transcript_path:$t,tool_name:"Bash",tool_use_id:$u}' | python3 -I "$L" "$4"; }
+bash_call(){ sid=$1; cwd=$2; shift 2; CALL=$((CALL+1)); u="toolu_$CALL"
+  hookcall "$sid" "$cwd" "$u" prebash
   (cd "$cwd" && eval "$@")
-  jq -n --arg s "$sid" --arg c "$cwd" --arg t "$T" '{session_id:$s,cwd:$c,transcript_path:$t,tool_name:"Bash"}' \
-    | python3 -I "$L" postbash; }
+  hookcall "$sid" "$cwd" "$u" postbash; }
 B="$W/bashrepo"; mkrepo "$B"; echo "mine" >> "$B/src/app.js"
 bash_call s13 "$B" 'printf "x\n" > src/new.js'
 check "file written through Bash opens a slug"      test "$(state "$B" '.slugs[].files|join(",")')" = "src/new.js"
@@ -147,7 +148,7 @@ D2="$W/docsbash"; mkrepo "$D2"; bash_call s17 "$D2" 'echo more >> docs/x.md'
 check "docs written through Bash open no slug"      test ! -e "$D2/.claude/work"
 
 # Round-2 findings: only commits the call authored count
-pre_only(){ jq -n --arg s "$1" --arg c "$2" '{session_id:$s,cwd:$c,tool_name:"Bash"}' | python3 -I "$L" prebash; }
+pre_only(){ hookcall "$1" "$2" "toolu_orphan_$1" prebash; }
 H="$W/headmoves"; mkrepo "$H"
 git -C "$H" checkout -q -b feature; echo f >> "$H/src/app.js"; git -C "$H" commit -qam "feature work"; git -C "$H" checkout -q main
 bash_call s20 "$H" 'git checkout -q feature'
@@ -163,10 +164,30 @@ stop s21 "$RB" ""
 check "rebase adds no trunk commits to the slug"    sh -c "! jq -r '.slugs[].commits|join(\",\")' '$RB/.claude/work/state.json' | grep -q \"\$(git -C '$RB' rev-parse --short=7 main)\""
 FB2="$W/failedbash"; mkrepo "$FB2"
 pre_only s22 "$FB2"; printf "z\n" > "$FB2/src/failed.js"          # the call wrote, then failed: no PostToolUse
-bash_call s22 "$FB2" 'true'                                       # the next call settles it first
-check "failed Bash call's write is still credited"  test "$(state "$FB2" '.slugs[].files|join(",")')" = "src/failed.js"
+bash_call s22 "$FB2" 'true'                                       # a fresh leftover is left alone (it may still run)
+check "a running call's snapshot is not settled early"  test ! -e "$FB2/.claude/work/state.json"
+jq -n --arg c "$FB2" '{session_id:"s22",cwd:$c,hook_event_name:"SubagentStop"}' | python3 -I "$L" stop
+check "a subagent's stop leaves it alone too"       test ! -e "$FB2/.claude/work/state.json"
+jq -n --arg c "$FB2" '{session_id:"s22",cwd:$c,hook_event_name:"Stop"}' | python3 -I "$L" stop
+check "the main Stop settles the failed call"       test "$(state "$FB2" '.slugs[].files|join(",")')" = "src/failed.js"
 check "reverted slug leaves the Open list"          sh -c "! awk '/^## Open/{on=1;next} /^## /{on=0} on' '$RV/.claude/work/NOW.md' | grep -q S-"
 check "...and is listed as closed"                  grep -A5 "^## Recently closed" "$RV/.claude/work/NOW.md" | grep -q "no changes left"
+
+# Round-3 findings: overlapping calls, rewritten commits
+OV="$W/overlap"; mkrepo "$OV"
+hookcall s30 "$OV" toolu_A prebash                                # lead A's commit call starts
+hookcall s30 "$OV" toolu_B prebash                                # an ic's call starts meanwhile
+(cd "$OV" && printf "a\n" > src/a.js && git add src/a.js && git commit -qm "A commits")
+hookcall s30 "$OV" toolu_B postbash
+hookcall s30 "$OV" toolu_A postbash
+check "overlapping calls keep the commit"           test "$(state "$OV" '.slugs[].authored|length')" -ge 1
+check "overlapping calls keep the file"             test "$(state "$OV" '.slugs[].files|join(",")')" = "src/a.js"
+AM="$W/amend"; mkrepo "$AM"
+bash_call s31 "$AM" 'printf "1\n" > src/x.js && git add src/x.js && git commit -qm first'
+bash_call s31 "$AM" 'printf "2\n" >> src/x.js && git commit -qa --amend -m amended'
+stop s31 "$AM" ""
+check "amended commit: only the live hash listed"   test "$(state "$AM" '.slugs[].commits|join(",")')" = "$(git -C "$AM" rev-parse --short=7 HEAD)"
+check "log.md names the live commit"                grep -q "done · $(git -C "$AM" rev-parse --short=7 HEAD) amended" "$AM/.claude/work/log.md"
 
 # Never in the way
 check "bad stdin exits 0"                           sh -c "echo '{bad' | python3 -I '$L' edit"
