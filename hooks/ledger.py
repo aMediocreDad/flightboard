@@ -16,6 +16,9 @@ worktree the edit happened in, so one place shows what is happening in the repo:
 Events (hooks.json wires them):
   edit   PreToolUse on Edit|Write|MultiEdit|NotebookEdit: opens a slug on the first code
          edit by this session in a checkout, and records the file. Never blocks.
+  prebash / postbash   Pre- and PostToolUse on Bash: code written or committed through
+         the shell (heredocs, sed -i, scripts) opens and fills a slug the same way.
+  Gitignored files never count.
   stop   Stop and SubagentStop: updates each open slug of this session from git (dirty
          files, commits since it opened, .claude/lead/VERDICT.md), records the
          "Judgment calls" bullets of the last message, closes slugs whose files are
@@ -129,7 +132,7 @@ class Ledger:
     def where(self, root):
         return "main checkout" if root == self.main else root.replace(os.path.expanduser("~"), "~")
 
-    def open_slug(self, session, root, title_of):
+    def open_slug(self, session, root, title_of, base=None):
         """title_of is called only when a new slug opens: reading the transcript is not free."""
         for sid, s in self.state["slugs"].items():
             if s["session"] == session and s["root"] == root and s["status"] != "done":
@@ -139,7 +142,7 @@ class Ledger:
         sid = f"S-{day}-{1 + sum(1 for k in self.state['slugs'] if k.startswith(f'S-{day}-'))}"
         branch = (git(root, "branch", "--show-current") or "").strip() or "(detached)"
         s = {"title": title, "session": session, "root": root, "branch": branch,
-             "base": (git(root, "rev-parse", "HEAD") or "").strip(), "opened": stamp(),
+             "base": base or (git(root, "rev-parse", "HEAD") or "").strip(), "opened": stamp(),
              "updated": stamp(), "status": "open", "files": [], "commits": [], "verdict": None}
         self.state["slugs"][sid] = s
         self.append("log.md", f"- {stamp()} {sid} opened · {branch} · {self.where(root)} · {title}")
@@ -234,10 +237,14 @@ def edited_path(data):
     return os.path.realpath(os.path.join(data.get("cwd") or os.getcwd(), path))
 
 
-def on_edit(data):
-    path = edited_path(data)
-    root = checkout_root(path) if path else None
-    if not root or not is_code(os.path.relpath(path, root)):
+def ignored(root, rel):
+    return git(root, "check-ignore", "-q", "--", rel) is not None
+
+
+def record(data, root, rels, base=None):
+    """Open (or reuse) this session's slug in root's checkout and add the code files."""
+    rels = [r for r in rels if is_code(r) and not ignored(root, r)]
+    if not rels:
         return
     main = main_root(root)
     ensure_excluded(main)
@@ -245,13 +252,64 @@ def on_edit(data):
     remember_main(session, main)
     led = Ledger(main)
     try:
-        _, s = led.open_slug(session, root, lambda: last_user_prompt(data.get("transcript_path")))
-        rel = os.path.relpath(path, root)
-        if rel not in s["files"]:
-            s["files"].append(rel)
+        _, s = led.open_slug(session, root, lambda: last_user_prompt(data.get("transcript_path")),
+                             base)
+        for rel in rels:
+            if rel not in s["files"]:
+                s["files"].append(rel)
         s["updated"] = stamp()
     finally:
         led.close()
+
+
+def on_edit(data):
+    path = edited_path(data)
+    root = checkout_root(path) if path else None
+    if root:
+        record(data, root, [os.path.relpath(path, root)])
+
+
+# Sessions often write code through Bash (heredocs, sed -i, scripts) and commit there.
+# Before each Bash call, snapshot the cwd checkout's HEAD and dirty files; after it,
+# whatever became dirty or got committed in between is this session's work.
+
+def snapshot(root):
+    head = (git(root, "rev-parse", "HEAD") or "").strip()
+    status = git(root, "status", "--porcelain", "--untracked-files=all") or ""
+    return head, sorted(ln[3:].split(" -> ")[-1].strip().strip('"')
+                        for ln in status.splitlines() if ln.strip())
+
+
+def snapshot_path(session):
+    return session_index(session)[:-4] + ".bash.json"
+
+
+def on_prebash(data):
+    root = checkout_root(data.get("cwd") or "")
+    if not root:
+        return
+    head, dirty = snapshot(root)
+    with open(snapshot_path(data.get("session_id", "unknown")), "w") as f:
+        json.dump({"root": root, "head": head, "dirty": dirty}, f)
+
+
+def on_postbash(data):
+    p = snapshot_path(data.get("session_id", "unknown"))
+    try:
+        with open(p) as f:
+            pre = json.load(f)
+    except (OSError, ValueError):
+        return
+    root = pre["root"]
+    if not os.path.isdir(root):
+        return
+    head, dirty = snapshot(root)
+    rels = set(dirty) - set(pre["dirty"])
+    if head and pre["head"] and head != pre["head"]:
+        out = git(root, "diff", "--name-only", pre["head"], head) or ""
+        rels |= {ln.strip() for ln in out.splitlines() if ln.strip()}
+    if rels:
+        record(data, root, sorted(rels), base=pre["head"] or None)
 
 
 def on_stop(data):
@@ -364,6 +422,10 @@ def main():
         data = json.load(sys.stdin)
         if event == "edit":
             on_edit(data)
+        elif event == "prebash":
+            on_prebash(data)
+        elif event == "postbash":
+            on_postbash(data)
         elif event == "stop":
             on_stop(data)
     except Exception as exc:  # the ledger never blocks the work it records

@@ -118,6 +118,34 @@ check "relayed judgment calls recorded once"        test "$(wc -l < "$DR/.claude
 S12=$(jq -r '.slugs|keys[0]' "$DR/.claude/work/state.json")
 check "a stop with nothing new writes no entry"     test "$(grep -c '^## ' "$DR/.claude/work/slugs/$S12.md")" = 1
 
+# Work done through Bash (the live PokeMath run wrote every file with heredocs and sed -i)
+bash_call(){ sid=$1; cwd=$2; shift 2
+  jq -n --arg s "$sid" --arg c "$cwd" --arg t "$T" '{session_id:$s,cwd:$c,transcript_path:$t,tool_name:"Bash"}' \
+    | python3 -I "$L" prebash
+  (cd "$cwd" && eval "$@")
+  jq -n --arg s "$sid" --arg c "$cwd" --arg t "$T" '{session_id:$s,cwd:$c,transcript_path:$t,tool_name:"Bash"}' \
+    | python3 -I "$L" postbash; }
+B="$W/bashrepo"; mkrepo "$B"; echo "mine" >> "$B/src/app.js"
+bash_call s13 "$B" 'printf "x\n" > src/new.js'
+check "file written through Bash opens a slug"      test "$(state "$B" '.slugs[].files|join(",")')" = "src/new.js"
+check "pre-existing dirty file is not attributed"   sh -c "! jq -e '.slugs[].files|index(\"src/app.js\")' '$B/.claude/work/state.json'"
+bash_call s13 "$B" 'git add src/new.js && git commit -qm "add new via shell"'
+bash_call s14 "$B" 'git commit -qam "the user commits app.js"'
+check "Bash commit by another session not added"    test "$(jq -r '.slugs|to_entries[]|select(.value.session=="s13")|.value.files|length' "$B/.claude/work/state.json")" = 1
+stop s13 "$B" ""
+S13=$(jq -r '.slugs|to_entries[]|select(.value.session=="s13")|.key' "$B/.claude/work/state.json")
+check "shell-committed work closes as done"         test "$(state "$B" ".slugs[\"$S13\"].status")" = done
+C="$W/commitrepo"; mkrepo "$C"
+bash_call s15 "$C" 'printf "y\n" > src/c.js && git add src/c.js && git commit -qm "write and commit in one call"'
+check "write+commit in one Bash call is caught"     test "$(state "$C" '.slugs[].files|join(",")')" = "src/c.js"
+stop s15 "$C" ""
+check "...and closes done with that commit"         test "$(state "$C" '.slugs[].status')" = done
+I="$W/ignored"; mkrepo "$I"; echo "shots/" > "$I/.gitignore"; git -C "$I" add .gitignore; git -C "$I" commit -qm ign
+mkdir -p "$I/shots"; edit s16 "$I/shots/run.mjs" "$I" "$T"
+check "gitignored code file opens no slug"          test ! -e "$I/.claude/work/state.json"
+D2="$W/docsbash"; mkrepo "$D2"; bash_call s17 "$D2" 'echo more >> docs/x.md'
+check "docs written through Bash open no slug"      test ! -e "$D2/.claude/work"
+
 # Never in the way
 check "bad stdin exits 0"                           sh -c "echo '{bad' | python3 -I '$L' edit"
 R2="$W/ro"; mkrepo "$R2"; mkdir -p "$R2/.claude"; chmod a-w "$R2/.claude"

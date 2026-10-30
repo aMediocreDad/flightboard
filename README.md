@@ -129,9 +129,11 @@ you restyle the board; nothing else touches presentation.
 
 `hooks/ledger.py` keeps a ledger of code-changing work per repo, so it outlives
 sessions and worktrees. The first code edit by a session in a checkout opens a
-"slug"; the end of each turn updates it from git and records the "Judgment
-calls" bullets of the final message. Questions and research that change no
-code open nothing.
+"slug", whether it goes through the file tools or the shell (each Bash call is
+bracketed by a snapshot of the checkout's HEAD and dirty files). The end of each
+turn updates every open slug from git and records the "Judgment calls" bullets
+of the final message. Questions, research, docs-only and gitignored changes
+open nothing.
 
 The ledger lives in the main checkout's `.claude/work/`, whichever worktree
 the edit happened in, and is added to `.git/info/exclude` automatically:
