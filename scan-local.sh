@@ -172,6 +172,8 @@ scan() {
       for f in AGENT_STATUS.md PR_BODY.md BRIEF.md; do
         if [ -f "$d/.claude/lead/$f" ] || [ -f "$gd/$f" ]; then files="${files}${f},"; fi
       done
+      # The work ledger (hooks/ledger.py) lives in a main checkout's .claude/work/.
+      [ -f "$d/.claude/work/NOW.md" ] && files="${files}NOW.md,"
       files=${files%,}
 
       slug=$(git -C "$d" remote get-url origin 2>/dev/null \

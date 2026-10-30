@@ -3,3 +3,6 @@
 # symlink it in for debugging, it still must not be committed.
 state/
 *.local
+
+# Bytecode from running the hooks or py_compile.
+__pycache__/

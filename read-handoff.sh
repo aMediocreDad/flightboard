@@ -31,10 +31,12 @@ awk -F'\t' '$9!="-" {print $1"\t"$9}' "$scan" | while IFS=$'\t' read -r d files;
   echo "########## $(printf '%s' "$d" | sed "s|^$HOME|~|")"
   IFS=',' read -ra fs <<< "$files"
   for f in "${fs[@]}"; do
-    p="$d/.claude/lead/$f"; [ -f "$p" ] || p="$gd/$f"
+    if [ "$f" = NOW.md ]; then p="$d/.claude/work/NOW.md"
+    else p="$d/.claude/lead/$f"; [ -f "$p" ] || p="$gd/$f"; fi
     [ -f "$p" ] || continue
     size=$(wc -c < "$p" | tr -d ' ')
-    if [ "$f" = AGENT_STATUS.md ] || [ "$size" -le "$((HEAD_B + TAIL_B))" ]; then
+    # AGENT_STATUS.md and the ledger's NOW.md are short status boards: print whole.
+    if [ "$f" = AGENT_STATUS.md ] || [ "$f" = NOW.md ] || [ "$size" -le "$((HEAD_B + TAIL_B))" ]; then
       # Short enough that an excerpt would print most of it twice.
       echo "----- $f (${size}B, full) -----"; cat "$p"
     else

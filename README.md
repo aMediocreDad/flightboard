@@ -125,6 +125,31 @@ regenerated each run. Only judgment is written by hand.
 `page/head.html` and `page/foot.html` hold the whole design. Editing them is how
 you restyle the board; nothing else touches presentation.
 
+## Work ledger
+
+`hooks/ledger.py` keeps a ledger of code-changing work per repo, so it outlives
+sessions and worktrees. The first code edit by a session in a checkout opens a
+"slug"; the end of each turn updates it from git and records the "Judgment
+calls" bullets of the final message. Questions and research that change no
+code open nothing.
+
+The ledger lives in the main checkout's `.claude/work/`, whichever worktree
+the edit happened in, and is added to `.git/info/exclude` automatically:
+
+| File | What it holds |
+|---|---|
+| `NOW.md` | Open slugs, recently closed ones, recent decisions |
+| `log.md` | One line per event |
+| `decisions.md` | Every judgment call, tagged with its slug |
+| `slugs/<id>.md` | What was asked, then one entry per turn |
+| `slugs/<id>/` | A worktree run's `.claude/lead/` files, kept after the worktree is gone |
+
+The sweep shows `NOW.md` beside the other handoff files, and the SessionStart
+hook prints the current repo's open slugs, after compaction too. Known limit:
+commits carry no session id, so two sessions editing the same file in one
+checkout can be credited with each other's commits. Tests:
+`bash hooks/ledger-fixtures.sh`.
+
 ## Privacy
 
 The dashboard is a private Artifact, visible only to you unless you explicitly
