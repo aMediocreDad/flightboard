@@ -169,7 +169,10 @@ check "a running call's snapshot is not settled early"  test ! -e "$FB2/.claude/
 jq -n --arg c "$FB2" '{session_id:"s22",cwd:$c,hook_event_name:"SubagentStop"}' | python3 -I "$L" stop
 check "a subagent's stop leaves it alone too"       test ! -e "$FB2/.claude/work/state.json"
 jq -n --arg c "$FB2" '{session_id:"s22",cwd:$c,hook_event_name:"Stop"}' | python3 -I "$L" stop
-check "the main Stop settles the failed call"       test "$(state "$FB2" '.slugs[].files|join(",")')" = "src/failed.js"
+check "main Stop leaves a fresh leftover alone"     test ! -e "$FB2/.claude/work/state.json"
+touch -t 202001010000 "$TMPDIR/flightboard-ledger/s22.bash/toolu_orphan_s22.json"
+jq -n --arg c "$FB2" '{session_id:"s22",cwd:$c,hook_event_name:"Stop"}' | python3 -I "$L" stop
+check "main Stop settles a leftover past 30 s"      test "$(state "$FB2" '.slugs[].files|join(",")')" = "src/failed.js"
 check "reverted slug leaves the Open list"          sh -c "! awk '/^## Open/{on=1;next} /^## /{on=0} on' '$RV/.claude/work/NOW.md' | grep -q S-"
 check "...and is listed as closed"                  grep -A5 "^## Recently closed" "$RV/.claude/work/NOW.md" | grep -q "no changes left"
 
@@ -180,7 +183,7 @@ hookcall s30 "$OV" toolu_B prebash                                # an ic's call
 (cd "$OV" && printf "a\n" > src/a.js && git add src/a.js && git commit -qm "A commits")
 hookcall s30 "$OV" toolu_B postbash
 hookcall s30 "$OV" toolu_A postbash
-check "overlapping calls keep the commit"           test "$(state "$OV" '.slugs[].authored|length')" -ge 1
+check "overlapping calls keep the commit"           test "$(state "$OV" '.slugs[].authored|length')" = 1
 check "overlapping calls keep the file"             test "$(state "$OV" '.slugs[].files|join(",")')" = "src/a.js"
 AM="$W/amend"; mkrepo "$AM"
 bash_call s31 "$AM" 'printf "1\n" > src/x.js && git add src/x.js && git commit -qm first'
@@ -188,6 +191,19 @@ bash_call s31 "$AM" 'printf "2\n" >> src/x.js && git commit -qa --amend -m amend
 stop s31 "$AM" ""
 check "amended commit: only the live hash listed"   test "$(state "$AM" '.slugs[].commits|join(",")')" = "$(git -C "$AM" rev-parse --short=7 HEAD)"
 check "log.md names the live commit"                grep -q "done · $(git -C "$AM" rev-parse --short=7 HEAD) amended" "$AM/.claude/work/log.md"
+AC="$W/amendclosed"; mkrepo "$AC"
+bash_call s32 "$AC" 'printf "1\n" > src/y.js && git add src/y.js && git commit -qm first'
+stop s32 "$AC" ""
+S32=$(jq -r '.slugs|keys[0]' "$AC/.claude/work/state.json")
+(cd "$AC" && printf "2\n" >> src/y.js && git commit -qa --amend -m "amended later")
+stop s33 "$AC" ""
+check "closed slug lists the commit amended later"  test "$(state "$AC" ".slugs[\"$S32\"].commits|join(\",\")")" = "$(git -C "$AC" rev-parse --short=7 HEAD)"
+check "...and stays closed"                         test "$(state "$AC" ".slugs[\"$S32\"].status")" = done
+check "log.md records the rewrite"                  grep -q "$S32 commits rewritten · $(git -C "$AC" rev-parse --short=7 HEAD)" "$AC/.claude/work/log.md"
+(cd "$AC" && git reset -q --hard HEAD~1)
+stop s33 "$AC" ""
+check "a dropped commit leaves none listed"         test "$(state "$AC" ".slugs[\"$S32\"].commits|length")" = 0
+check "...and log.md says none are left"            grep -q "$S32 commits rewritten · none left on a branch" "$AC/.claude/work/log.md"
 
 # Never in the way
 check "bad stdin exits 0"                           sh -c "echo '{bad' | python3 -I '$L' edit"

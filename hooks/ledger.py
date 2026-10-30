@@ -320,6 +320,10 @@ def commit_files(root, hashes):
 
 
 STALE_SNAPSHOT_SECS = 600
+# At the main Stop, a snapshot younger than this may belong to a background agent's call
+# that is still running; its own PostToolUse settles it.
+STOP_SETTLE_SECS = 30
+CLOSED_RECHECKED = 20
 
 
 def snapshot_dir(session):
@@ -387,7 +391,7 @@ def on_postbash(data):
 def on_stop(data):
     session = data.get("session_id", "unknown")
     if data.get("hook_event_name", "Stop") == "Stop":
-        settle_leftovers(data)
+        settle_leftovers(data, older_than=STOP_SETTLE_SECS)
     calls = judgment_calls(data.get("last_assistant_message"))
     for main in dict.fromkeys(session_mains(session, data.get("cwd"))):
         if not os.path.exists(os.path.join(main, WORK, "state.json")):
@@ -401,8 +405,47 @@ def on_stop(data):
             for sid, s in led.state["slugs"].items():
                 if s["status"] not in CLOSED:
                     changed |= update_slug(led, sid, s, calls if s["session"] == session else [])
+            # A commit amended or restacked after its slug closed: name the live one.
+            closed = sorted(((k, v) for k, v in led.state["slugs"].items()
+                             if v["status"] in CLOSED and v.get("authored")),
+                            key=lambda kv: kv[1]["updated"], reverse=True)[:CLOSED_RECHECKED]
+            for sid, s in closed:
+                changed |= recheck_commits(led, sid, s)
         finally:
             led.close(changed)
+
+
+def live_commits(root, s):
+    """The slug's commits as "hash subject" lines, only those a branch still holds.
+
+    An amend or a rebase replaces a commit; its old hash stays resolvable but no branch
+    holds it. With no authored commit left, the slug's own files since its base stand in.
+    """
+    commits = []
+    for h in s.get("authored", []):
+        on_branch = git(root, "merge-base", "--is-ancestor", h, "HEAD") is not None \
+            or (git(root, "for-each-ref", "--contains", h, "--count=1", "refs/heads") or "").strip()
+        line = (git(root, "log", "-1", "--format=%h %s", h) or "").strip() if on_branch else ""
+        if line:
+            commits.append(line)
+    files = s.get("files") or []
+    if not commits and files and s.get("base"):
+        log = git(root, "log", "--format=%h %s", f"{s['base']}..HEAD", "--", *files) or ""
+        commits = [c for c in log.splitlines() if c.strip()]
+    return commits
+
+
+def recheck_commits(led, sid, s):
+    """Refresh a closed slug's commit list without reopening it. Returns whether it changed."""
+    if not os.path.isdir(s["root"]):
+        return False
+    hashes = [c.split()[0] for c in live_commits(s["root"], s)]
+    if hashes == s.get("commits"):
+        return False
+    led.append("log.md", f"- {stamp()} {sid} commits rewritten · "
+                         f"{', '.join(hashes) or 'none left on a branch'}")
+    s["commits"] = hashes
+    return True
 
 
 def update_slug(led, sid, s, calls):
@@ -414,17 +457,7 @@ def update_slug(led, sid, s, calls):
         return True
     status = git(root, "status", "--porcelain", "--", *files) if files else ""
     dirty = [ln[3:].strip() for ln in (status or "").splitlines() if ln.strip()]
-    commits = []
-    for h in s.get("authored", []):
-        # An amend or a rebase replaces a commit: list it only while a branch holds it.
-        on_branch = git(root, "merge-base", "--is-ancestor", h, "HEAD") is not None \
-            or (git(root, "for-each-ref", "--contains", h, "--count=1", "refs/heads") or "").strip()
-        line = (git(root, "log", "-1", "--format=%h %s", h) or "").strip() if on_branch else ""
-        if line:
-            commits.append(line)
-    if not commits and files and s.get("base"):
-        log = git(root, "log", "--format=%h %s", f"{s['base']}..HEAD", "--", *files) or ""
-        commits = [c for c in log.splitlines() if c.strip()]
+    commits = live_commits(root, s)
     verdict = None
     vpath = os.path.join(root, ".claude", "lead", "VERDICT.md")
     if os.path.exists(vpath):
